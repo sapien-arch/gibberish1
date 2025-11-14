@@ -640,6 +640,318 @@ int main() {
 }
 
 
+
+
+
+
+SHIFT REDUCE 
+#include <iostream>
+#include <iomanip>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <tuple>
+using namespace std;
+
+
+using namespace std;
+
+
+struct Action {
+    string type; // "shift", "reduce", "accept", "error"
+    int num;     // state number for shift, rule number for reduce
+};
+
+
+struct Rule {
+    string lhs;
+    vector<string> rhs;
+};
+
+
+vector<Rule> grammar = {
+    {"S'", {"E"}},    // augmented grammar
+    {"E", {"E", "+", "T"}},
+    {"E", {"T"}},
+    {"T", {"T", "*", "F"}},
+    {"T", {"F"}},
+    {"F", {"(", "E", ")"}},
+    {"F", {"id"}}
+};
+
+
+map<pair<int, string>, Action> ACTION;
+map<pair<int, string>, int> GOTO;
+set<string> terminals = {"id", "+", "*", "(", ")", "$"};
+set<string> nonterminals = {"E", "T", "F"};
+
+
+struct Item {
+    int rule;
+    int dot;
+    string lookahead;
+};
+
+
+bool operator<(const Item &a, const Item &b) {
+    return tie(a.rule, a.dot, a.lookahead) < tie(b.rule, b.dot, b.lookahead);
+}
+
+
+bool isTerminal(const string &s) {
+    return terminals.count(s);
+}
+
+
+set<string> FIRST(const vector<string> &symbols);
+
+
+map<string, set<string>> firstMemo;
+set<string> FIRST1(const string &sym) {
+    if (firstMemo.count(sym)) return firstMemo[sym];
+    set<string> res;
+    if (isTerminal(sym)) {
+        res.insert(sym);
+    } else {
+        for (auto &rule : grammar) {
+            if (rule.lhs == sym) {
+                auto tmp = FIRST(rule.rhs);
+                res.insert(tmp.begin(), tmp.end());
+            }
+        }
+    }
+    return firstMemo[sym] = res;
+}
+
+
+set<string> FIRST(const vector<string> &symbols) {
+    set<string> res;
+    if (symbols.empty()) {
+        res.insert("ε");
+        return res;
+    }
+    for (auto &sym : symbols) {
+        auto firstSym = FIRST1(sym);
+        bool hasEps = firstSym.count("ε");
+        firstSym.erase("ε");
+        res.insert(firstSym.begin(), firstSym.end());
+        if (!hasEps) return res;
+    }
+    res.insert("ε");
+    return res;
+}
+
+
+map<string, set<string>> FOLLOW;
+void computeFOLLOW() {
+    FOLLOW["S'"].insert("$");
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto &rule : grammar) {
+            for (int i = 0; i < (int)rule.rhs.size(); i++) {
+                string B = rule.rhs[i];
+                if (!nonterminals.count(B)) continue;
+                vector<string> beta(rule.rhs.begin() + i + 1, rule.rhs.end());
+                auto firstBeta = FIRST(beta);
+                size_t before = FOLLOW[B].size();
+                for (auto &f : firstBeta) {
+                    if (f != "ε") FOLLOW[B].insert(f);
+                }
+                if (firstBeta.count("ε") || beta.empty()) {
+                    FOLLOW[B].insert(FOLLOW[rule.lhs].begin(), FOLLOW[rule.lhs].end());
+                }
+                if (FOLLOW[B].size() > before) changed = true;
+            }
+        }
+    }
+}
+
+
+struct State {
+    set<pair<int, int>> items; // (rule index, dot position)
+};
+
+
+vector<set<pair<int,int>>> states;
+map<pair<int,string>, int> transitions;
+
+
+set<pair<int,int>> closure(set<pair<int,int>> I) {
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        set<pair<int,int>> newI = I;
+        for (auto [ruleIdx, dot] : I) {
+            auto &rule = grammar[ruleIdx];
+            if (dot < (int)rule.rhs.size()) {
+                string B = rule.rhs[dot];
+                if (nonterminals.count(B)) {
+                    for (int r = 0; r < (int)grammar.size(); r++) {
+                        if (grammar[r].lhs == B) {
+                            if (!newI.count({r,0})) {
+                                newI.insert({r,0});
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        I = newI;
+    }
+    return I;
+}
+
+
+set<pair<int,int>> goTo(set<pair<int,int>> I, string X) {
+    set<pair<int,int>> J;
+    for (auto [ruleIdx, dot] : I) {
+        auto &rule = grammar[ruleIdx];
+        if (dot < (int)rule.rhs.size() && rule.rhs[dot] == X) {
+            J.insert({ruleIdx, dot+1});
+        }
+    }
+    return closure(J);
+}
+
+
+int getStateIndex(set<pair<int,int>> I) {
+    for (int i=0;i<(int)states.size();i++)
+        if (states[i] == I) return i;
+    return -1;
+}
+
+
+void buildLR0() {
+    set<pair<int,int>> start = closure({{0,0}});
+    states.push_back(start);
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int i=0;i<(int)states.size();i++) {
+            for (auto X : terminals) {
+                auto next = goTo(states[i], X);
+                if (!next.empty()) {
+                    int idx = getStateIndex(next);
+                    if (idx == -1) {
+                        idx = states.size();
+                        states.push_back(next);
+                        changed = true;
+                    }
+                    transitions[{i,X}] = idx;
+                }
+            }
+            for (auto X : nonterminals) {
+                auto next = goTo(states[i], X);
+                if (!next.empty()) {
+                    int idx = getStateIndex(next);
+                    if (idx == -1) {
+                        idx = states.size();
+                        states.push_back(next);
+                        changed = true;
+                    }
+                    transitions[{i,X}] = idx;
+                }
+            }
+        }
+    }
+}
+
+
+void buildParsingTable() {
+    computeFOLLOW();
+    buildLR0();
+    for (int i=0;i<(int)states.size();i++) {
+        for (auto [ruleIdx, dot] : states[i]) {
+            auto &rule = grammar[ruleIdx];
+            if (dot < (int)rule.rhs.size()) {
+                string a = rule.rhs[dot];
+                if (isTerminal(a)) {
+                    ACTION[{i,a}] = {"shift", transitions[{i,a}]};
+                }
+            } else {
+                if (ruleIdx == 0) {
+                    ACTION[{i,"$"}] = {"accept", -1};
+                } else {
+                    for (auto a : FOLLOW[rule.lhs]) {
+                        ACTION[{i,a}] = {"reduce", ruleIdx};
+                    }
+                }
+            }
+        }
+        for (auto A : nonterminals) {
+            if (transitions.count({i,A})) {
+                GOTO[{i,A}] = transitions[{i,A}];
+            }
+        }
+    }
+}
+
+
+void parseInput(vector<string> tokens) {
+    tokens.push_back("$");
+    vector<int> stateStack = {0};
+    vector<string> symbolStack = {"$"};
+    int ip = 0;
+    cout << "+------------------------------+------------------------------+------------------------------+\n";
+    cout << "| Stack                        | Input                        | Action                       |\n";
+    cout << "+------------------------------+------------------------------+------------------------------+\n";
+    while (true) {
+        int s = stateStack.back();
+        string a = tokens[ip];
+        Action act = ACTION.count({s,a}) ? ACTION[{s,a}] : Action{"error",-1};
+
+
+        // Print step
+        string stackStr, inputStr;
+        for (auto &sym : symbolStack) stackStr += sym + " ";
+        for (int i=ip;i<(int)tokens.size();i++) inputStr += tokens[i] + " ";
+        cout << "| " << setw(28) << left << stackStr
+             << "| " << setw(28) << left << inputStr;
+        
+        if (act.type == "shift") {
+            cout << "| Shift " << a << " to state " << act.num << "       |\n";
+            symbolStack.push_back(a);
+            stateStack.push_back(act.num);
+            ip++;
+        } else if (act.type == "reduce") {
+            auto &rule = grammar[act.num];
+            cout << "| Reduce by " << rule.lhs << " → ";
+            for (auto &x : rule.rhs) cout << x;
+            cout << "         |\n";
+            for (int j=0;j<(int)rule.rhs.size();j++) {
+                symbolStack.pop_back();
+                stateStack.pop_back();
+            }
+            symbolStack.push_back(rule.lhs);
+            int t = stateStack.back();
+            stateStack.push_back(GOTO[{t, rule.lhs}]);
+        } else if (act.type == "accept") {
+            cout << "| Accept                       |\n";
+            break;
+        } else {
+            cout << "| Error: string not accepted.  |\n";
+            break;
+        }
+    }
+    cout << "+------------------------------+------------------------------+------------------------------+\n";
+}
+
+
+int main() {
+    buildParsingTable();
+    vector<string> input;
+    string st;
+    while((cin>>st))input.push_back(st);
+    
+    parseInput(input);
+}
+
+
 lr0
 #include <bits/stdc++.h>
 using namespace std;
